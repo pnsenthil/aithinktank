@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { useLocation } from "wouter";
 import { useCreateSession } from "@/hooks/use-sessions";
 import { useSessionContext } from "@/context/session-context";
 import { useToast } from "@/hooks/use-toast";
@@ -35,6 +36,7 @@ interface AgentConfig {
 }
 
 export function SessionSetup() {
+  const [, setLocation] = useLocation();
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [researchMode, setResearchMode] = useState<"quick" | "deep">("quick");
   const [debateRounds, setDebateRounds] = useState(3);
@@ -137,14 +139,19 @@ export function SessionSetup() {
       setCurrentSessionId(newSession.id);
       
       toast({
-        title: "Session Created Successfully",
-        description: `AI Think Tank session "${sessionTitle}" is ready!`,
+        title: "🎉 Session Created Successfully!",
+        description: `AI Think Tank session "${sessionTitle}" is ready! Taking you to Problem Statement...`,
       });
 
       // Clear form
       setSessionTitle("");
       setFacilitatorName("");
       setFiles([]);
+      
+      // Auto-navigate to Problem Statement (Phase 2) after brief delay
+      setTimeout(() => {
+        setLocation("/problem");
+      }, 1500);
       
     } catch (error) {
       console.error("Failed to create session:", error);
