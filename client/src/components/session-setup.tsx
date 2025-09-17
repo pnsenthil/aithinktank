@@ -1,4 +1,7 @@
 import { useState, useCallback } from "react";
+import { useCreateSession } from "@/hooks/use-sessions";
+import { useSessionContext } from "@/context/session-context";
+import { useToast } from "@/hooks/use-toast";
 import { Upload, FileText, Link as LinkIcon, Settings, Sliders, Clock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -37,8 +40,14 @@ export function SessionSetup() {
   const [debateRounds, setDebateRounds] = useState(3);
   const [pointsPerSide, setPointsPerSide] = useState(3);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [sessionTitle, setSessionTitle] = useState("");
+  const [facilitatorName, setFacilitatorName] = useState("");
+  const [isCreating, setIsCreating] = useState(false);
+
+  const { setCurrentSessionId } = useSessionContext();
+  const createSessionMutation = useCreateSession();
+  const { toast } = useToast();
   
-  // todo: remove mock functionality
   const [agentConfigs] = useState<AgentConfig[]>([
     {
       name: "Solution Agent",
@@ -99,6 +108,56 @@ export function SessionSetup() {
     setFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  const handleStartSession = async () => {
+    if (!sessionTitle.trim()) {
+      toast({
+        title: "Session Title Required",
+        description: "Please provide a title for your session.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsCreating(true);
+    
+    try {
+      const newSession = await createSessionMutation.mutateAsync({
+        title: sessionTitle.trim(),
+        facilitator: facilitatorName.trim() || "Anonymous",
+        currentPhase: 1,
+        metadata: {
+          researchMode,
+          debateRounds,
+          pointsPerSide,
+          agentConfigs,
+          uploadedFiles: files.map(f => ({ name: f.name, type: f.type }))
+        }
+      });
+
+      setCurrentSessionId(newSession.id);
+      
+      toast({
+        title: "Session Created Successfully",
+        description: `AI Think Tank session "${sessionTitle}" is ready!`,
+      });
+
+      // Clear form
+      setSessionTitle("");
+      setFacilitatorName("");
+      setFiles([]);
+      
+    } catch (error) {
+      console.error("Failed to create session:", error);
+      toast({
+        title: "Failed to Create Session",
+        description: error instanceof Error ? error.message : "Unknown error occurred",
+        variant: "destructive",
+      });
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
   return (
     <div className="space-y-6" data-testid="session-setup">
       {/* Grounding Materials */}
@@ -123,8 +182,32 @@ export function SessionSetup() {
             <Upload className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
             <p className="text-lg font-medium mb-2">Upload grounding materials</p>
             <p className="text-muted-foreground mb-4">
-              Drag & drop files or click to browse
+              Drag and drop files here, or click to browse. Supports PDFs, documents, and web links.
             </p>
+
+            <div className="space-y-3 mb-6">
+              <div>
+                <Label htmlFor="session-title">Session Title *</Label>
+                <Input
+                  id="session-title"
+                  placeholder="e.g., Customer Retention Strategy Workshop"
+                  value={sessionTitle}
+                  onChange={(e) => setSessionTitle(e.target.value)}
+                  data-testid="input-session-title"
+                />
+              </div>
+              
+              <div>
+                <Label htmlFor="facilitator-name">Facilitator Name</Label>
+                <Input
+                  id="facilitator-name"
+                  placeholder="Your name (optional)"
+                  value={facilitatorName}
+                  onChange={(e) => setFacilitatorName(e.target.value)}
+                  data-testid="input-facilitator-name"
+                />
+              </div>
+            </div>
             <input
               type="file"
               multiple
@@ -314,8 +397,12 @@ export function SessionSetup() {
         <Button variant="outline" data-testid="button-save-template">
           Save as Template
         </Button>
-        <Button data-testid="button-start-session">
-          Start Workshop Session
+        <Button 
+          onClick={handleStartSession}
+          disabled={isCreating || !sessionTitle.trim()}
+          data-testid="button-start-session"
+        >
+          {isCreating ? "Creating Session..." : "Start Workshop Session"}
         </Button>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation } from "wouter";
+import { Switch, Route } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -7,6 +7,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { SessionProvider, useSessionContext } from "@/context/session-context";
 
 // Import pages
 import SetupPage from "@/pages/setup";
@@ -35,27 +36,7 @@ function Router() {
 }
 
 function AppContent() {
-  const [location] = useLocation();
-  
-  // Determine current phase based on route
-  const getCurrentPhase = () => {
-    switch (location) {
-      case '/setup': case '/': return 1;
-      case '/problem': return 2;
-      case '/solution': return 3;
-      case '/debate': return 4;
-      case '/analysis': return 5;
-      case '/summary': return 6;
-      default: return 1;
-    }
-  };
-
-  // todo: remove mock functionality - phases would be managed by backend state
-  const completedPhases = location === '/summary' ? [1, 2, 3, 4, 5] : 
-    location === '/analysis' ? [1, 2, 3, 4] :
-    location === '/debate' ? [1, 2, 3] :
-    location === '/solution' ? [1, 2] :
-    location === '/problem' ? [1] : [];
+  const { getCurrentPhase, getCompletedPhases } = useSessionContext();
 
   const style = {
     "--sidebar-width": "20rem",
@@ -67,7 +48,7 @@ function AppContent() {
       <div className="flex h-screen w-full">
         <AppSidebar 
           currentPhase={getCurrentPhase()} 
-          completedPhases={completedPhases} 
+          completedPhases={getCompletedPhases()} 
         />
         <div className="flex flex-col flex-1">
           <header className="flex items-center justify-between p-4 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -93,7 +74,9 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider defaultTheme="light" enableSystem>
         <TooltipProvider>
-          <AppContent />
+          <SessionProvider>
+            <AppContent />
+          </SessionProvider>
           <Toaster />
         </TooltipProvider>
       </ThemeProvider>
