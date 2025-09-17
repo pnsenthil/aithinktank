@@ -1,9 +1,16 @@
 import { ProblemInput } from "@/components/problem-input";
 import { AgentStatus } from "@/components/agent-status";
 import { useSessionContext } from "@/context/session-context";
+import { useLocation } from "wouter";
 
 export default function ProblemPage() {
   const { getCurrentPhase } = useSessionContext();
+  const [, setLocation] = useLocation();
+
+  const handleProblemApprove = (problemId: string) => {
+    // Navigate to the solution phase after problem approval
+    setLocation('/solution');
+  };
   
   return (
     <div className="container max-w-6xl mx-auto py-8" data-testid="page-problem">
@@ -27,7 +34,7 @@ export default function ProblemPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Problem Input - Main Content */}
         <div className="lg:col-span-2">
-          <ProblemInput />
+          <ProblemInput onApprove={handleProblemApprove} />
         </div>
         
         {/* Agent Status - Sidebar */}
