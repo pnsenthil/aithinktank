@@ -44,14 +44,17 @@ export interface IStorage {
 
   // Debate operations
   createDebatePoint(point: InsertDebatePoint): Promise<DebatePoint>;
+  getDebatePoint(id: string): Promise<DebatePoint | undefined>;
   getSessionDebatePoints(sessionId: string): Promise<DebatePoint[]>;
   getSolutionDebatePoints(solutionId: string): Promise<DebatePoint[]>;
   updateDebatePointVotes(id: string, upvotes: number, downvotes: number): Promise<DebatePoint | undefined>;
 
   // Evidence operations
   createEvidence(evidenceData: InsertEvidence): Promise<Evidence>;
+  getEvidence(id: string): Promise<Evidence | undefined>;
   getSessionEvidence(sessionId: string): Promise<Evidence[]>;
   getPointEvidence(pointId: string): Promise<Evidence[]>;
+  linkEvidenceToDebatePoint(argumentId: string, evidenceId: string): Promise<boolean>;
 
   // Question operations
   createQuestion(question: InsertQuestion): Promise<Question>;
@@ -222,6 +225,11 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(debatePoints.createdAt));
   }
 
+  async getDebatePoint(id: string): Promise<DebatePoint | undefined> {
+    const result = await db.select().from(debatePoints).where(eq(debatePoints.id, id)).limit(1);
+    return result[0];
+  }
+
   async updateDebatePointVotes(id: string, upvotes: number, downvotes: number): Promise<DebatePoint | undefined> {
     const result = await db.update(debatePoints)
       .set({ upvotes, downvotes })
@@ -246,10 +254,28 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(evidence.createdAt));
   }
 
+  async getEvidence(id: string): Promise<Evidence | undefined> {
+    const result = await db.select().from(evidence).where(eq(evidence.id, id)).limit(1);
+    return result[0];
+  }
+
   async getPointEvidence(pointId: string): Promise<Evidence[]> {
     return await db.select().from(evidence)
       .where(eq(evidence.pointId, pointId))
       .orderBy(desc(evidence.createdAt));
+  }
+
+  async linkEvidenceToDebatePoint(argumentId: string, evidenceId: string): Promise<boolean> {
+    try {
+      const result = await db.update(evidence)
+        .set({ pointId: argumentId })
+        .where(eq(evidence.id, evidenceId))
+        .returning();
+      return result.length > 0;
+    } catch (error) {
+      console.error('Failed to link evidence to debate point:', error);
+      return false;
+    }
   }
 
   // Question operations
