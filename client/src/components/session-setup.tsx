@@ -125,13 +125,13 @@ export function SessionSetup() {
     try {
       const newSession = await createSessionMutation.mutateAsync({
         title: sessionTitle.trim(),
-        facilitator: facilitatorName.trim() || "Anonymous",
         currentPhase: 1,
-        metadata: {
+        config: {
           researchMode,
           debateRounds,
           pointsPerSide,
           agentConfigs,
+          facilitatorName: facilitatorName.trim() || "Anonymous",
           uploadedFiles: files.map(f => ({ name: f.name, type: f.type }))
         }
       });
