@@ -316,11 +316,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Approve/reject problem
+  // Approve/reject problem (legacy route)
   app.patch("/api/problems/:id/status", async (req, res) => {
     try {
       const { status } = req.body;
       const problem = await storage.updateProblemStatus(req.params.id, status);
+      if (!problem) {
+        return res.status(404).json({ message: "Problem not found" });
+      }
+      res.json(problem);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update problem status", error });
+    }
+  });
+
+  // Update problem status in session context (matches frontend expectation)
+  app.patch("/api/sessions/:sessionId/problems/:problemId", authenticateUser, async (req: AuthenticatedRequest, res) => {
+    try {
+      const { status } = req.body;
+      const problem = await storage.updateProblemStatus(req.params.problemId, status);
       if (!problem) {
         return res.status(404).json({ message: "Problem not found" });
       }

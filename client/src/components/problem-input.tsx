@@ -67,7 +67,7 @@ export function ProblemInput({ onSubmit, onApprove }: ProblemInputProps) {
         setIsGeneratingVoice(true);
         const result = await generateVoiceMutation.mutateAsync({
           text: problemStatement.trim(),
-          voiceId: 'professional-narrator'
+          voiceId: 'pNInz6obpgDQGcFmaJgB'
         });
         if (result.success && result.audioUrl) {
           setAudioUrl(result.audioUrl);
