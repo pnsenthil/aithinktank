@@ -1,5 +1,8 @@
 import { useState } from "react";
-import { CheckCircle, TrendingUp, TrendingDown, BarChart3, Users, Edit, Download, Share } from "lucide-react";
+import { CheckCircle, TrendingUp, TrendingDown, BarChart3, Users, Edit, Download, Share, Play, Pause, Volume2, AlertCircle } from "lucide-react";
+import { useSessionContext } from "@/context/session-context";
+import { useSummary, useSaveSummary, useGenerateSummary, useSummaryNarration } from "@/hooks/use-sessions";
+import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,23 +24,148 @@ interface ParticipantSentiment {
 }
 
 interface SummaryViewProps {
+  sessionId?: string; // Make sessionId optional, will use context if not provided
   onExport?: (format: "pdf" | "markdown") => void;
   onEditSummary?: (sectionId: string, content: string) => void;
 }
 
-export function SummaryView({ onExport, onEditSummary }: SummaryViewProps) {
+export function SummaryView({ sessionId: propSessionId, onExport, onEditSummary }: SummaryViewProps) {
   const [isEditing, setIsEditing] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
 
-  // todo: remove mock functionality
-  const [summary] = useState({
+  const { currentSessionId: contextSessionId } = useSessionContext();
+  const sessionId = propSessionId || contextSessionId;
+  const { toast } = useToast();
+
+  // Real API data fetching
+  const { data: summary, isLoading: summaryLoading, error: summaryError } = useSummary(sessionId);
+  const saveSummaryMutation = useSaveSummary();
+  const generateSummaryMutation = useGenerateSummary();
+  const narrationMutation = useSummaryNarration(sessionId);
+
+  // Show loading state
+  if (summaryLoading) {
+    return (
+      <div className="flex items-center justify-center p-8" data-testid="summary-loading">
+        <div className="text-center space-y-2">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+          <p className="text-muted-foreground">Loading summary...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state
+  if (summaryError) {
+    return (
+      <div className="text-center p-8" data-testid="summary-error">
+        <AlertCircle className="h-12 w-12 mx-auto text-destructive mb-4" />
+        <h3 className="text-lg font-medium mb-2">Failed to Load Summary</h3>
+        <p className="text-muted-foreground mb-4">Unable to fetch session summary</p>
+        <Button variant="outline" onClick={() => window.location.reload()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  // Show empty state or generate option
+  if (!summary && sessionId) {
+    return (
+      <div className="text-center p-8" data-testid="no-summary">
+        <BarChart3 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+        <h3 className="text-lg font-medium mb-2">No Summary Available</h3>
+        <p className="text-muted-foreground mb-4">Generate a summary for this session using AI analysis.</p>
+        <Button 
+          onClick={() => handleGenerateSummary()} 
+          disabled={generateSummaryMutation.isPending}
+          data-testid="button-generate-summary"
+        >
+          {generateSummaryMutation.isPending ? 'Generating...' : 'Generate Summary'}
+        </Button>
+      </div>
+    );
+  }
+
+  if (!summary) {
+    return (
+      <div className="text-center p-8" data-testid="no-session">
+        <BarChart3 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+        <h3 className="text-lg font-medium mb-2">No Session Selected</h3>
+        <p className="text-muted-foreground">Please select a session to view its summary.</p>
+      </div>
+    );
+  }
+
+  // Transform summary data for component format
+  const transformedSections = summary.sections ? (typeof summary.sections === 'string' ? JSON.parse(summary.sections) : summary.sections) : [];
+  const transformedSentiment = summary.participantSentiment ? (typeof summary.participantSentiment === 'string' ? JSON.parse(summary.participantSentiment) : summary.participantSentiment) : [];
+
+  const handleGenerateSummary = async () => {
+    if (!sessionId) return;
+    
+    try {
+      await generateSummaryMutation.mutateAsync(sessionId);
+      toast({
+        title: "Summary Generated",
+        description: "AI summary has been generated successfully.",
+      });
+    } catch (error) {
+      toast({
+        title: "Generation Failed", 
+        description: "Failed to generate summary. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handlePlayNarration = async () => {
+    if (isPlaying) {
+      currentAudio?.pause();
+      setIsPlaying(false);
+      return;
+    }
+
+    try {
+      const result = await narrationMutation.mutateAsync();
+      
+      if (currentAudio) {
+        currentAudio.pause();
+      }
+
+      const audio = new Audio(result.audioUrl);
+      setCurrentAudio(audio);
+      
+      audio.onplay = () => setIsPlaying(true);
+      audio.onpause = () => setIsPlaying(false);
+      audio.onended = () => setIsPlaying(false);
+      
+      await audio.play();
+      
+      toast({
+        title: "Playing Summary Narration",
+        description: `Duration: ${Math.round(result.duration / 1000)}s`,
+      });
+    } catch (error) {
+      toast({
+        title: "Narration Failed",
+        description: "Unable to play summary narration. Voice service may be unavailable.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Mock data fallback for UI structure (real data should be structured similarly)
+  const mockSummary = {
     sessionId: "session-001",
     title: "Customer Success Enhancement Program",
     moderatorInsights: "The debate revealed strong support for customer success programs with legitimate concerns about implementation costs and automation balance. The evidence strongly supports retention benefits, but implementation strategy needs careful consideration.",
     createdAt: "2024-01-15T14:30:00Z",
     totalParticipants: 12,
     totalVotes: 156
-  });
+  };
 
   const [sections] = useState<SummarySection[]>([
     {
@@ -120,11 +248,10 @@ export function SummaryView({ onExport, onEditSummary }: SummaryViewProps) {
             <div className="space-y-2">
               <CardTitle className="flex items-center gap-2">
                 <CheckCircle className="h-5 w-5 text-green-600" />
-                Workshop Summary: {summary.title}
+                Workshop Summary: {summary.sessionId || "AI Think Tank Session"}
               </CardTitle>
               <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                <Badge variant="outline">{summary.totalParticipants} participants</Badge>
-                <Badge variant="outline">{summary.totalVotes} total votes</Badge>
+                <Badge variant="outline">Session {summary.id}</Badge>
                 <span>Completed: {new Date(summary.createdAt).toLocaleDateString()}</span>
               </div>
             </div>

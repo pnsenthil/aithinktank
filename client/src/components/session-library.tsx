@@ -1,5 +1,7 @@
-import { useState } from "react";
-import { Search, Filter, Calendar, Users, TrendingUp, ExternalLink, MoreHorizontal, Archive } from "lucide-react";
+import { useState, useMemo } from "react";
+import { Search, Filter, Calendar, Users, TrendingUp, ExternalLink, MoreHorizontal, Archive, AlertCircle } from "lucide-react";
+import { useLibrary } from "@/hooks/use-sessions";
+import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,67 +51,89 @@ export function SessionLibrary({ onViewSession, onCreateSession }: SessionLibrar
   const [outcomeFilter, setOutcomeFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<string>("updated");
 
-  // todo: remove mock functionality
-  const [sessions] = useState<SessionRecord[]>([
-    {
-      id: "session-001",
-      title: "Customer Success Enhancement Program",
-      problemStatement: "How might we reduce customer churn in our SaaS platform while maintaining profitability?",
-      status: "completed",
-      createdAt: "2024-01-15T10:00:00Z",
-      updatedAt: "2024-01-15T16:30:00Z",
-      facilitator: { name: "Sarah Chen", avatar: "/avatars/sarah.jpg" },
-      participants: 12,
-      totalVotes: 156,
-      solutionCount: 2,
-      tags: ["customer-retention", "saas", "profitability"],
-      outcome: "adopted",
-      engagementScore: 85
-    },
-    {
-      id: "session-002", 
-      title: "Mobile App Performance Optimization",
-      problemStatement: "How might we improve mobile app performance while reducing development costs?",
-      status: "in_progress",
-      createdAt: "2024-01-14T14:00:00Z", 
-      updatedAt: "2024-01-14T15:45:00Z",
-      facilitator: { name: "Alex Kim" },
-      participants: 8,
-      totalVotes: 42,
-      solutionCount: 1,
-      tags: ["mobile", "performance", "development"],
-      engagementScore: 72
-    },
-    {
-      id: "session-003",
-      title: "Remote Team Collaboration Improvement",
-      problemStatement: "How might we enhance remote team collaboration without increasing meeting overhead?",
-      status: "completed",
-      createdAt: "2024-01-12T09:00:00Z",
-      updatedAt: "2024-01-12T17:20:00Z", 
-      facilitator: { name: "Jordan Smith" },
-      participants: 15,
-      totalVotes: 203,
-      solutionCount: 3,
-      tags: ["remote-work", "collaboration", "productivity"],
-      outcome: "modified",
-      engagementScore: 91
-    },
-    {
-      id: "session-004",
-      title: "Sustainable Packaging Innovation",
-      problemStatement: "How might we redesign our packaging to be more sustainable while maintaining cost effectiveness?",
-      status: "draft",
-      createdAt: "2024-01-10T11:30:00Z",
-      updatedAt: "2024-01-10T12:00:00Z",
-      facilitator: { name: "Maya Patel" },
-      participants: 0,
-      totalVotes: 0,
-      solutionCount: 0,
-      tags: ["sustainability", "packaging", "cost-optimization"],
-      engagementScore: 0
-    }
-  ]);
+  const { toast } = useToast();
+
+  // Real API data fetching with filters
+  const libraryFilter = useMemo(() => {
+    const filter: { status?: string; outcome?: string } = {};
+    if (statusFilter !== "all") filter.status = statusFilter;
+    if (outcomeFilter !== "all") filter.outcome = outcomeFilter;
+    return filter;
+  }, [statusFilter, outcomeFilter]);
+
+  const { data: rawSessions = [], isLoading: libraryLoading, error: libraryError } = useLibrary(libraryFilter);
+
+  // Transform sessions data for component format
+  const sessions = useMemo(() => {
+    return rawSessions.map(session => ({
+      id: session.id,
+      title: session.title,
+      problemStatement: "AI Think Tank Session", // Default if not in session data
+      status: session.status as "completed" | "in_progress" | "draft",
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      facilitator: { 
+        name: session.facilitatorId ? `User ${session.facilitatorId.slice(0, 8)}` : "Unknown",
+        avatar: undefined 
+      },
+      participants: 0, // Could be calculated from session data
+      totalVotes: 0, // Could be calculated from session data  
+      solutionCount: 0, // Could be calculated from session data
+      tags: session.config ? (typeof session.config === 'object' && session.config.tags ? session.config.tags : []) : [],
+      outcome: session.status === "completed" ? "adopted" as const : undefined,
+      engagementScore: session.status === "completed" ? 85 : session.status === "in_progress" ? 60 : 0
+    }));
+  }, [rawSessions]);
+
+  const handleViewSession = (sessionId: string) => {
+    onViewSession?.(sessionId);
+    console.log("Opening session:", sessionId);
+  };
+
+  const handleCreateSession = () => {
+    onCreateSession?.();
+    console.log("Creating new session");
+  };
+
+  // Show loading state
+  if (libraryLoading) {
+    return (
+      <div className="flex items-center justify-center p-8" data-testid="library-loading">
+        <div className="text-center space-y-2">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+          <p className="text-muted-foreground">Loading sessions...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state  
+  if (libraryError) {
+    return (
+      <div className="text-center p-8" data-testid="library-error">
+        <AlertCircle className="h-12 w-12 mx-auto text-destructive mb-4" />
+        <h3 className="text-lg font-medium mb-2">Failed to Load Library</h3>
+        <p className="text-muted-foreground mb-4">Unable to fetch session library</p>
+        <Button variant="outline" onClick={() => window.location.reload()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  // Show empty state or use real sessions data
+  if (sessions.length === 0 && !libraryLoading) {
+    return (
+      <div className="text-center p-8" data-testid="no-sessions">
+        <Archive className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+        <h3 className="text-lg font-medium mb-2">No Sessions Found</h3>
+        <p className="text-muted-foreground mb-4">Create your first AI Think Tank session to get started.</p>
+        <Button onClick={handleCreateSession} data-testid="button-create-first-session">
+          + Create First Session
+        </Button>
+      </div>
+    );
+  }
 
   const filteredSessions = sessions.filter(session => {
     const matchesSearch = 
@@ -132,16 +156,6 @@ export function SessionLibrary({ onViewSession, onCreateSession }: SessionLibrar
       default: return 0;
     }
   });
-
-  const handleViewSession = (sessionId: string) => {
-    onViewSession?.(sessionId);
-    console.log("Opening session:", sessionId);
-  };
-
-  const handleCreateSession = () => {
-    onCreateSession?.();
-    console.log("Creating new session");
-  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
