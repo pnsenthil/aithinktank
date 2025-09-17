@@ -270,3 +270,94 @@ export function useVoiceHealth() {
     retry: false,
   });
 }
+
+// Summary and Library Integration Hooks
+
+export function useSummary(sessionId: string | null) {
+  return useQuery<Summary | null>({
+    queryKey: ['/api/sessions', sessionId, 'summary'],
+    enabled: !!sessionId,
+    staleTime: 30000, // 30 seconds
+  });
+}
+
+export function useSaveSummary() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: async ({ 
+      sessionId, 
+      summaryData 
+    }: { 
+      sessionId: string; 
+      summaryData: Omit<Summary, 'id' | 'sessionId' | 'createdAt'> 
+    }) => {
+      const response = await apiRequest('POST', `/api/sessions/${sessionId}/summary`, summaryData);
+      return response.json() as Promise<Summary>;
+    },
+    onSuccess: (_, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/sessions', sessionId, 'summary'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/sessions', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['/api/library'] });
+    },
+  });
+}
+
+export function useGenerateSummary() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: async (sessionId: string) => {
+      const response = await apiRequest('POST', `/api/sessions/${sessionId}/summary/generate`);
+      return response.json() as Promise<Summary>;
+    },
+    onSuccess: (_, sessionId) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/sessions', sessionId, 'summary'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/sessions', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['/api/library'] });
+    },
+  });
+}
+
+// Library Management Hooks
+
+export function useLibrary(filter?: { status?: string; outcome?: string }) {
+  const queryParams = new URLSearchParams();
+  if (filter?.status) queryParams.append('status', filter.status);
+  if (filter?.outcome) queryParams.append('outcome', filter.outcome);
+  
+  const queryString = queryParams.toString();
+  const url = queryString ? `/api/library?${queryString}` : '/api/library';
+  
+  return useQuery<Session[]>({
+    queryKey: ['/api/library', filter],
+    queryFn: async () => {
+      const response = await apiRequest('GET', url);
+      return response.json() as Promise<Session[]>;
+    },
+    staleTime: 60000, // 1 minute
+  });
+}
+
+// Summary Voice Narration Hook
+
+export function useSummaryNarration(sessionId: string | null, voiceId?: string) {
+  return useMutation({
+    mutationFn: async () => {
+      if (!sessionId) throw new Error('Session ID is required');
+      
+      const queryParams = new URLSearchParams();
+      if (voiceId) queryParams.append('voice', voiceId);
+      
+      const url = `/api/sessions/${sessionId}/narration${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+      const response = await apiRequest('GET', url);
+      return response.json() as Promise<{
+        success: boolean;
+        audioUrl: string;
+        duration: number;
+        characterCount: number;
+        title: string;
+      }>;
+    },
+  });
+}

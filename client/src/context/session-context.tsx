@@ -16,6 +16,30 @@ interface SessionContextType {
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
 
+// Helper function for safe localStorage access
+function getStoredSessionId(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem('ai-think-tank-session-id');
+  } catch {
+    return null;
+  }
+}
+
+function setStoredSessionId(sessionId: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (sessionId) {
+      localStorage.setItem('ai-think-tank-session-id', sessionId);
+    } else {
+      localStorage.removeItem('ai-think-tank-session-id');
+    }
+  } catch {
+    // Ignore localStorage errors
+  }
+}
+
+// Export the hook with Fast Refresh compatibility
 export function useSessionContext() {
   const context = useContext(SessionContext);
   if (context === undefined) {
@@ -29,9 +53,15 @@ interface SessionProviderProps {
 }
 
 export function SessionProvider({ children }: SessionProviderProps) {
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(
-    () => localStorage.getItem('ai-think-tank-session-id')
-  );
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
+
+  // Initialize session ID from localStorage on client-side
+  useEffect(() => {
+    const storedSessionId = getStoredSessionId();
+    setCurrentSessionId(storedSessionId);
+    setIsInitialized(true);
+  }, []);
 
   const { 
     data: currentSession, 
@@ -44,12 +74,10 @@ export function SessionProvider({ children }: SessionProviderProps) {
 
   // Persist session ID to localStorage
   useEffect(() => {
-    if (currentSessionId) {
-      localStorage.setItem('ai-think-tank-session-id', currentSessionId);
-    } else {
-      localStorage.removeItem('ai-think-tank-session-id');
+    if (isInitialized) {
+      setStoredSessionId(currentSessionId);
     }
-  }, [currentSessionId]);
+  }, [currentSessionId, isInitialized]);
 
   // Update error state
   useEffect(() => {
@@ -59,6 +87,10 @@ export function SessionProvider({ children }: SessionProviderProps) {
       setError(null);
     }
   }, [queryError]);
+
+  const handleSetCurrentSessionId = (sessionId: string | null) => {
+    setCurrentSessionId(sessionId);
+  };
 
   const advanceToNextPhase = async () => {
     if (!currentSession) {
@@ -104,9 +136,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
   const contextValue: SessionContextType = {
     currentSessionId,
     currentSession: currentSession || null,
-    isLoading,
+    isLoading: isLoading || !isInitialized,
     error,
-    setCurrentSessionId,
+    setCurrentSessionId: handleSetCurrentSessionId,
     advanceToNextPhase,
     getCurrentPhase,
     getCompletedPhases,
