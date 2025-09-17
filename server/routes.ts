@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { orchestrator } from "./agents/orchestrator";
+import { getVoiceService, AudioGenerationRequestSchema } from "./services/voice-service";
 import { 
   insertSessionSchema, insertProblemSchema, insertSolutionSchema, 
   insertDebatePointSchema, insertEvidenceSchema, insertQuestionSchema,
@@ -437,6 +438,267 @@ export async function registerRoutes(app: Express): Promise<Server> {
         error: error instanceof Error ? error.message : "Unknown error",
         sessionId: req.params.sessionId
       });
+    }
+  });
+
+  // Voice Integration Routes
+  
+  // Health check for voice service
+  app.get("/api/voice/health", async (req, res) => {
+    try {
+      const voiceService = getVoiceService();
+      const health = await voiceService.getHealth();
+      
+      if (health.available) {
+        res.json({
+          status: "healthy",
+          available: true,
+          configured: health.configured
+        });
+      } else {
+        res.status(503).json({
+          status: "unavailable",
+          available: false,
+          configured: health.configured,
+          error: health.lastError || "Service unavailable"
+        });
+      }
+    } catch (error) {
+      res.status(503).json({
+        status: "error",
+        available: false,
+        configured: false,
+        error: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
+  // Generate speech from text
+  app.post("/api/voice/generate", async (req, res) => {
+    try {
+      const voiceService = getVoiceService();
+      
+      // Check service availability first
+      const isAvailable = await voiceService.isServiceAvailable();
+      if (!isAvailable) {
+        const health = await voiceService.getHealth();
+        return res.status(503).json({ 
+          message: "Voice service is currently unavailable", 
+          error: health.lastError || "Service not available",
+          configured: health.configured
+        });
+      }
+
+      // Validate request with Zod schema
+      const validation = AudioGenerationRequestSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          message: "Invalid request data", 
+          errors: validation.error.issues 
+        });
+      }
+
+      const { text, voiceId, modelId, voiceSettings } = validation.data;
+
+      const result = await voiceService.generateSpeech({
+        text,
+        voiceId,
+        modelId,
+        voiceSettings
+      });
+
+      res.json({
+        success: true,
+        audioUrl: result.audioUrl,
+        duration: result.duration,
+        characterCount: result.characterCount
+      });
+    } catch (error) {
+      console.error("Speech generation error:", error);
+      if (error instanceof Error && error.message.includes('not available')) {
+        res.status(503).json({ 
+          message: "Voice service is currently unavailable", 
+          error: error.message 
+        });
+      } else {
+        res.status(500).json({ 
+          message: "Failed to generate speech", 
+          error: error instanceof Error ? error.message : "Unknown error" 
+        });
+      }
+    }
+  });
+
+  // Narrate debate summary
+  app.post("/api/voice/narrate-debate/:sessionId", async (req, res) => {
+    try {
+      const { sessionId } = req.params;
+      
+      // Get session and debate data
+      const session = await storage.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ message: "Session not found" });
+      }
+
+      const problems = await storage.getSessionProblems(sessionId);
+      const approvedProblem = problems.find(p => p.status === 'approved');
+      
+      if (!approvedProblem) {
+        return res.status(400).json({ message: "No approved problem found for narration" });
+      }
+
+      const debatePoints = await storage.getSessionDebatePoints(sessionId);
+      const summaries = await storage.getSessionSummaries(sessionId);
+
+      // Build debate summary structure
+      const rounds = debatePoints.reduce((acc, point) => {
+        const roundIndex = point.round - 1;
+        if (!acc[roundIndex]) {
+          acc[roundIndex] = {
+            roundNumber: point.round,
+            summary: `Round ${point.round}: Debate between proponent and opponent positions.`,
+            winnerRole: 'draw' as const
+          };
+        }
+        return acc;
+      }, [] as any[]);
+
+      const finalSummary = summaries.find(s => s.phase === 6);
+      
+      const summary = {
+        sessionTitle: session.title,
+        problemStatement: approvedProblem.description,
+        rounds: rounds.length > 0 ? rounds : [{
+          roundNumber: 1,
+          summary: "Debate session completed with arguments from both sides.",
+          winnerRole: 'draw' as const
+        }],
+        finalConclusion: finalSummary?.content || "Thank you for participating in this AI Think Tank session.",
+        winnerPosition: 'draw' as const
+      };
+
+      const voiceService = getVoiceService();
+      
+      // Check service availability first
+      const isAvailable = await voiceService.isServiceAvailable();
+      if (!isAvailable) {
+        const health = await voiceService.getHealth();
+        return res.status(503).json({ 
+          message: "Voice service is currently unavailable", 
+          error: health.lastError || "Service not available",
+          configured: health.configured
+        });
+      }
+
+      const result = await voiceService.narrateDebateSummary(summary);
+
+      res.json({
+        success: true,
+        audioUrl: result.audioUrl,
+        duration: result.duration,
+        characterCount: result.characterCount,
+        title: `Debate Summary: ${session.title}`
+      });
+    } catch (error) {
+      console.error("Debate narration error:", error);
+      if (error instanceof Error && error.message.includes('not available')) {
+        res.status(503).json({ 
+          message: "Voice service is currently unavailable", 
+          error: error.message 
+        });
+      } else {
+        res.status(500).json({ 
+          message: "Failed to generate debate narration", 
+          error: error instanceof Error ? error.message : "Unknown error" 
+        });
+      }
+    }
+  });
+
+  // Narrate problem statement
+  app.post("/api/voice/narrate-problem", async (req, res) => {
+    try {
+      const { problemStatement, context } = req.body;
+      
+      if (!problemStatement || typeof problemStatement !== 'string') {
+        return res.status(400).json({ message: "Problem statement is required" });
+      }
+
+      const voiceService = getVoiceService();
+      
+      // Check service availability first
+      const isAvailable = await voiceService.isServiceAvailable();
+      if (!isAvailable) {
+        const health = await voiceService.getHealth();
+        return res.status(503).json({ 
+          message: "Voice service is currently unavailable", 
+          error: health.lastError || "Service not available",
+          configured: health.configured
+        });
+      }
+
+      const result = await voiceService.narrateProblemStatement(problemStatement, context);
+
+      res.json({
+        success: true,
+        audioUrl: result.audioUrl,
+        duration: result.duration,
+        characterCount: result.characterCount,
+        title: "Problem Statement Confirmation"
+      });
+    } catch (error) {
+      console.error("Problem narration error:", error);
+      if (error instanceof Error && error.message.includes('not available')) {
+        res.status(503).json({ 
+          message: "Voice service is currently unavailable", 
+          error: error.message 
+        });
+      } else {
+        res.status(500).json({ 
+          message: "Failed to generate problem narration", 
+          error: error instanceof Error ? error.message : "Unknown error" 
+        });
+      }
+    }
+  });
+
+  // Get available voices
+  app.get("/api/voice/voices", async (req, res) => {
+    try {
+      const voiceService = getVoiceService();
+      
+      // Check service availability first
+      const isAvailable = await voiceService.isServiceAvailable();
+      if (!isAvailable) {
+        const health = await voiceService.getHealth();
+        return res.status(503).json({ 
+          message: "Voice service is currently unavailable", 
+          error: health.lastError || "Service not available",
+          configured: health.configured,
+          voices: []
+        });
+      }
+
+      const voices = await voiceService.getAvailableVoices();
+      res.json({
+        success: true,
+        voices
+      });
+    } catch (error) {
+      console.error("Failed to fetch voices:", error);
+      if (error instanceof Error && error.message.includes('not available')) {
+        res.status(503).json({ 
+          message: "Voice service is currently unavailable", 
+          error: error.message,
+          voices: [] 
+        });
+      } else {
+        res.status(500).json({ 
+          message: "Failed to fetch available voices", 
+          error: error instanceof Error ? error.message : "Unknown error",
+          voices: []
+        });
+      }
     }
   });
 
