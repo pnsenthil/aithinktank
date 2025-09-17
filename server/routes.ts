@@ -702,6 +702,161 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Summary and Library Routes
+
+  // Get session summary
+  app.get("/api/sessions/:sessionId/summary", async (req, res) => {
+    try {
+      const summary = await storage.getSessionSummary(req.params.sessionId);
+      if (!summary) {
+        return res.status(404).json({ message: "Summary not found" });
+      }
+      res.json(summary);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch summary", error });
+    }
+  });
+
+  // Create or update session summary
+  app.post("/api/sessions/:sessionId/summary", async (req, res) => {
+    try {
+      const summaryData = insertSummarySchema.omit({ sessionId: true }).parse(req.body);
+      const summary = await storage.upsertSummary(req.params.sessionId, summaryData);
+      
+      // Mark session as completed when summary is saved
+      await storage.updateSession(req.params.sessionId, { 
+        status: "completed",
+        currentPhase: 6,
+        completedPhases: [1, 2, 3, 4, 5, 6]
+      });
+      
+      res.json(summary);
+    } catch (error) {
+      res.status(400).json({ message: "Invalid summary data", error });
+    }
+  });
+
+  // Generate AI summary from session data
+  app.post("/api/sessions/:sessionId/summary/generate", async (req, res) => {
+    try {
+      const sessionId = req.params.sessionId;
+      
+      // Fetch session data
+      const session = await storage.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ message: "Session not found" });
+      }
+
+      // Generate summary using orchestrator
+      const summaryResult = await orchestrator.generateSummary(sessionId);
+      
+      if (!summaryResult.success) {
+        return res.status(500).json({ 
+          message: "Failed to generate summary", 
+          error: summaryResult.error 
+        });
+      }
+
+      // Save the generated summary
+      const summary = await storage.upsertSummary(sessionId, summaryResult.summary);
+      
+      // Mark session as completed
+      await storage.updateSession(sessionId, { 
+        status: "completed",
+        currentPhase: 6,
+        completedPhases: [1, 2, 3, 4, 5, 6]
+      });
+
+      res.json(summary);
+    } catch (error) {
+      console.error("Summary generation error:", error);
+      res.status(500).json({ 
+        message: "Failed to generate summary", 
+        error: error instanceof Error ? error.message : "Unknown error" 
+      });
+    }
+  });
+
+  // Get library sessions (with filtering)
+  app.get("/api/library", async (req, res) => {
+    try {
+      const { status, outcome } = req.query;
+      const filter: any = {};
+      
+      if (status && typeof status === 'string') {
+        filter.status = status;
+      }
+      if (outcome && typeof outcome === 'string') {
+        filter.outcome = outcome;
+      }
+
+      const sessions = await storage.listSessions(filter);
+      res.json(sessions);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch library sessions", error });
+    }
+  });
+
+  // Get summary narration (voice synthesis)
+  app.get("/api/sessions/:sessionId/narration", async (req, res) => {
+    try {
+      const sessionId = req.params.sessionId;
+      const voiceId = req.query.voice as string || "21m00Tcm4TlvDq8ikWAM"; // Default voice
+      
+      // Get session summary
+      const summary = await storage.getSessionSummary(sessionId);
+      if (!summary) {
+        return res.status(404).json({ message: "Summary not found" });
+      }
+
+      const voiceService = getVoiceService();
+      
+      // Check service availability
+      const isAvailable = await voiceService.isServiceAvailable();
+      if (!isAvailable) {
+        const health = await voiceService.getHealth();
+        return res.status(503).json({ 
+          message: "Voice service is currently unavailable", 
+          error: health.lastError || "Service not available",
+          configured: health.configured
+        });
+      }
+
+      // Create narration text from summary
+      const narrationText = `
+      Session Summary: ${summary.moderatorInsights}
+      
+      Key Decision Prompts: ${summary.decisionPrompts.join('. ')}
+      
+      ${summary.recommendedActions ? `Recommended Actions: ${summary.recommendedActions}` : ''}
+      `.trim();
+
+      // Generate audio
+      const result = await voiceService.generateAudio(narrationText, voiceId);
+
+      res.json({
+        success: true,
+        audioUrl: result.audioUrl,
+        duration: result.duration,
+        characterCount: result.characterCount,
+        title: "Session Summary Narration"
+      });
+    } catch (error) {
+      console.error("Summary narration error:", error);
+      if (error instanceof Error && error.message.includes('not available')) {
+        res.status(503).json({ 
+          message: "Voice service is currently unavailable", 
+          error: error.message 
+        });
+      } else {
+        res.status(500).json({ 
+          message: "Failed to generate summary narration", 
+          error: error instanceof Error ? error.message : "Unknown error" 
+        });
+      }
+    }
+  });
+
   const httpServer = createServer(app);
 
   return httpServer;

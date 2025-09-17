@@ -64,6 +64,10 @@ export interface IStorage {
   // Summary operations
   createSummary(summary: InsertSummary): Promise<Summary>;
   getSessionSummary(sessionId: string): Promise<Summary | undefined>;
+  upsertSummary(sessionId: string, summary: Omit<InsertSummary, 'sessionId'>): Promise<Summary>;
+
+  // Library operations
+  listSessions(filter?: {status?: string, outcome?: string}): Promise<Session[]>;
 
   // Vote operations
   createVote(vote: InsertVote): Promise<Vote>;
@@ -317,6 +321,34 @@ export class DatabaseStorage implements IStorage {
       .where(eq(summaries.sessionId, sessionId))
       .limit(1);
     return result[0];
+  }
+
+  async upsertSummary(sessionId: string, summary: Omit<InsertSummary, 'sessionId'>): Promise<Summary> {
+    // Check if summary already exists
+    const existing = await this.getSessionSummary(sessionId);
+    
+    if (existing) {
+      // Update existing summary
+      const result = await db.update(summaries)
+        .set(summary)
+        .where(eq(summaries.sessionId, sessionId))
+        .returning();
+      return result[0];
+    } else {
+      // Create new summary
+      return await this.createSummary({ ...summary, sessionId });
+    }
+  }
+
+  // Library operations
+  async listSessions(filter?: {status?: string, outcome?: string}): Promise<Session[]> {
+    let query = db.select().from(sessions);
+    
+    if (filter?.status) {
+      query = query.where(eq(sessions.status, filter.status)) as any;
+    }
+    
+    return await query.orderBy(desc(sessions.updatedAt));
   }
 
   // Vote operations
