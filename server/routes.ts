@@ -1,5 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
+import session from "express-session";
+import { randomBytes } from "crypto";
 import { storage } from "./storage";
 import { orchestrator } from "./agents/orchestrator";
 import { getVoiceService, AudioGenerationRequestSchema } from "./services/voice-service";
@@ -25,6 +27,11 @@ declare module 'express-session' {
 // Authentication middleware
 interface AuthenticatedRequest extends Request {
   user?: { id: string; username: string };
+  session: import('express-session').Session & Partial<import('express-session').SessionData>;
+}
+
+interface SessionRequest extends Request {
+  session: import('express-session').Session & Partial<import('express-session').SessionData>;
 }
 
 const authenticateUser = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -82,19 +89,46 @@ const rateLimit = (windowMs: number, maxRequests: number) => {
 };
 
 // Validation schemas
-const loginSchema = z.object({
-  username: z.string().min(1, "Username is required"),
-  password: z.string().min(1, "Password is required")
-});
+// Enhanced password policy for production security
+const passwordSchema = z.string()
+  .min(8, "Password must be at least 8 characters")
+  .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
+  .regex(/[a-z]/, "Password must contain at least one lowercase letter")  
+  .regex(/[0-9]/, "Password must contain at least one number")
+  .regex(/[^A-Za-z0-9]/, "Password must contain at least one special character");
 
 const registerSchema = insertUserSchema.extend({
+  password: passwordSchema,
   confirmPassword: z.string()
 }).refine(data => data.password === data.confirmPassword, {
   message: "Passwords do not match",
   path: ["confirmPassword"]
 });
 
+const loginSchema = z.object({
+  username: z.string().min(1, "Username is required"),
+  password: z.string().min(1, "Password is required")
+});
+
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Configure secure session middleware
+  app.use(session({
+    secret: process.env.SESSION_SECRET || 'dev-secret-change-in-production',
+    resave: false,
+    saveUninitialized: false,
+    name: 'sid', // Don't use default 'connect.sid' for security
+    cookie: {
+      httpOnly: true, // Prevent XSS attacks
+      secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+      sameSite: 'strict', // Prevent CSRF attacks
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    },
+    genid: () => {
+      // Generate cryptographically secure session IDs
+      return randomBytes(32).toString('hex');
+    }
+  }));
+
   // Authentication Routes
   
   // Register user
@@ -126,7 +160,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Login user
-  app.post("/api/auth/login", rateLimit(15 * 60 * 1000, 10), async (req, res) => {
+  app.post("/api/auth/login", rateLimit(15 * 60 * 1000, 10), async (req: SessionRequest, res) => {
     try {
       const { username, password } = loginSchema.parse(req.body);
       
@@ -140,14 +174,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Invalid credentials" });
       }
       
-      // Set session
-      req.session.userId = user.id;
-      req.session.username = user.username;
-      
-      res.json({ 
-        message: "Login successful", 
-        user: { id: user.id, username: user.username } 
+      // Regenerate session ID to prevent session fixation attacks
+      req.session.regenerate((err: any) => {
+        if (err) {
+          return res.status(500).json({ message: "Session creation failed" });
+        }
+        
+        // Set session data after regeneration
+        req.session.userId = user.id;
+        req.session.username = user.username;
+        
+        res.json({ 
+          message: "Login successful", 
+          user: { id: user.id, username: user.username } 
+        });
       });
+      
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: "Validation error", errors: error.errors });
@@ -157,12 +199,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Logout user
-  app.post("/api/auth/logout", (req, res) => {
+  app.post("/api/auth/logout", (req: SessionRequest, res) => {
     req.session.destroy((err: any) => {
       if (err) {
         return res.status(500).json({ message: "Logout failed" });
       }
-      res.clearCookie('connect.sid');
+      // Clear the session cookie
+      res.clearCookie('sid', {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict'
+      });
       res.json({ message: "Logout successful" });
     });
   });
