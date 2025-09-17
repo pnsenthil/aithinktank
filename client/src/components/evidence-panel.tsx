@@ -1,5 +1,8 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Search, ExternalLink, Check, AlertCircle, FileText, Link as LinkIcon, Pin } from "lucide-react";
+import { useSessionContext } from "@/context/session-context";
+import { useSessionEvidence } from "@/hooks/use-sessions";
+import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,54 +43,34 @@ export function EvidencePanel({ isOpen = true, onToggle }: EvidencePanelProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedEvidence, setSelectedEvidence] = useState<string | null>(null);
 
-  // todo: remove mock functionality
-  const [evidence] = useState<Evidence[]>([
-    {
-      id: "ev-001",
-      pointId: "point-1-pro",
-      claim: "SaaS companies reduce churn by 20-30% through customer success programs",
-      source: {
-        title: "SaaS Customer Success Benchmarks 2024",
-        url: "https://example.com/saas-benchmarks",
-        type: "research",
-        date: "2024"
-      },
-      confidence: 85,
-      snippet: "Companies implementing dedicated customer success programs showed average churn reduction of 23% within 12 months, with enterprise clients showing higher retention rates...",
-      relevanceScore: 92
-    },
-    {
-      id: "ev-002", 
-      pointId: "point-1-con",
-      claim: "Customer success manager costs range from $80-120K annually",
-      source: {
-        title: "SaaS Compensation Report",
-        url: "https://example.com/compensation",
-        type: "research",
-        date: "2024"
-      },
-      confidence: 95,
-      snippet: "Median salary for Customer Success Managers in SaaS companies ranges from $82K to $118K, with additional platform and training costs averaging $15K-25K annually...",
-      relevanceScore: 88
-    },
-    {
-      id: "ev-003",
-      pointId: "point-3-pro", 
-      claim: "Customer acquisition cost is 5-25x higher than retention cost",
-      source: {
-        title: "Customer Acquisition vs Retention Economics",
-        url: "https://example.com/retention-economics", 
-        type: "research",
-        date: "2023"
-      },
-      confidence: 90,
-      snippet: "Research across 500+ SaaS companies shows that acquiring a new customer costs between 5-25 times more than retaining an existing customer, with the ratio increasing in competitive markets...",
-      relevanceScore: 94
-    }
-  ]);
+  const { currentSessionId } = useSessionContext();
+  const { data: rawEvidence = [], isLoading: evidenceLoading, error: evidenceError } = useSessionEvidence(currentSessionId);
+  const { toast } = useToast();
 
-  // todo: remove mock functionality
-  const [questions] = useState<Question[]>([
+  // Transform backend evidence to component format
+  const evidence = useMemo(() => {
+    return rawEvidence.map(item => ({
+      id: item.id,
+      pointId: item.pointId || '',
+      claim: item.claim,
+      source: typeof item.source === 'object' ? {
+        title: item.source.title || 'Unknown Source',
+        url: item.source.url || '',
+        type: item.source.type || 'external',
+        date: item.source.date
+      } : {
+        title: 'Unknown Source',
+        url: '',
+        type: 'external' as const
+      },
+      confidence: item.confidence,
+      snippet: item.snippet,
+      relevanceScore: item.relevanceScore
+    }));
+  }, [rawEvidence]);
+
+  // Mock questions for now - can be integrated later when questions API is added
+  const questions = [
     {
       id: "q-001",
       question: "What's the typical implementation timeline for customer success platforms?",
@@ -111,7 +94,7 @@ export function EvidencePanel({ isOpen = true, onToggle }: EvidencePanelProps) {
       answered: true,
       answer: "Login frequency, feature adoption rates, and support ticket sentiment are the strongest predictive indicators, with 85% accuracy when combined."
     }
-  ]);
+  ];
 
   const getConfidenceColor = (confidence: number) => {
     if (confidence >= 80) return "text-green-600";
@@ -134,6 +117,35 @@ export function EvidencePanel({ isOpen = true, onToggle }: EvidencePanelProps) {
   );
 
   const sortedQuestions = [...questions].sort((a, b) => b.votes - a.votes);
+
+  const handleViewSource = (url: string, sourceTitle: string) => {
+    if (!url || url.trim() === '') {
+      toast({
+        title: "No source URL",
+        description: "This evidence doesn't have a valid source URL.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    try {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      toast({
+        title: "Failed to open source",
+        description: "Unable to open the source URL. Please check if it's valid.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleRetryEvidence = () => {
+    toast({
+      title: "Retrying...",
+      description: "Refreshing evidence data.",
+    });
+    window.location.reload();
+  };
 
   if (!isOpen) {
     return (
@@ -169,27 +181,75 @@ export function EvidencePanel({ isOpen = true, onToggle }: EvidencePanelProps) {
       </CardHeader>
       
       <CardContent className="space-y-4 p-4">
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search evidence..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-8"
-            data-testid="input-search-evidence"
-          />
-        </div>
+        {/* Loading State */}
+        {evidenceLoading && (
+          <div className="flex items-center justify-center p-8" data-testid="evidence-loading">
+            <div className="text-center space-y-2">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto"></div>
+              <p className="text-sm text-muted-foreground">Loading evidence...</p>
+            </div>
+          </div>
+        )}
 
-        <ScrollArea className="h-64">
-          {/* Evidence List */}
-          <div className="space-y-3">
-            <h4 className="font-medium text-sm flex items-center gap-2">
-              <Pin className="h-3 w-3" />
-              Attached Evidence
-            </h4>
-            
-            {filteredEvidence.map((ev) => (
+        {/* Error State */}
+        {evidenceError && (
+          <div className="text-center p-6" data-testid="evidence-error">
+            <AlertCircle className="h-8 w-8 mx-auto text-destructive mb-2" />
+            <h4 className="font-medium mb-1">Failed to Load Evidence</h4>
+            <p className="text-sm text-muted-foreground mb-3">Unable to fetch evidence data</p>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={handleRetryEvidence}
+              data-testid="button-retry-evidence"
+            >
+              Retry
+            </Button>
+          </div>
+        )}
+
+        {/* Success State */}
+        {!evidenceLoading && !evidenceError && (
+          <>
+            {/* Search */}
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search evidence..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-8"
+                data-testid="input-search-evidence"
+              />
+            </div>
+
+            <ScrollArea className="h-64">
+              {/* Evidence List */}
+              <div className="space-y-3">
+                <h4 className="font-medium text-sm flex items-center gap-2">
+                  <Pin className="h-3 w-3" />
+                  Attached Evidence
+                </h4>
+                
+                {/* Empty State */}
+                {evidence.length === 0 && (
+                  <div className="text-center p-6" data-testid="no-evidence">
+                    <Pin className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+                    <h4 className="font-medium mb-1">No Evidence Available</h4>
+                    <p className="text-sm text-muted-foreground">Evidence will appear here as the debate progresses.</p>
+                  </div>
+                )}
+
+                {/* Filtered Empty State */}
+                {evidence.length > 0 && filteredEvidence.length === 0 && (
+                  <div className="text-center p-6" data-testid="no-filtered-evidence">
+                    <Search className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+                    <h4 className="font-medium mb-1">No Matching Evidence</h4>
+                    <p className="text-sm text-muted-foreground">Try adjusting your search terms.</p>
+                  </div>
+                )}
+                
+                {filteredEvidence.map((ev) => (
               <div
                 key={ev.id}
                 className={`p-3 border rounded-lg cursor-pointer transition-colors ${
@@ -225,7 +285,13 @@ export function EvidencePanel({ isOpen = true, onToggle }: EvidencePanelProps) {
                         <div className="text-xs text-muted-foreground">
                           {ev.source.title}
                         </div>
-                        <Button size="sm" variant="ghost" data-testid={`button-view-source-${ev.id}`}>
+                        <Button 
+                          size="sm" 
+                          variant="ghost" 
+                          onClick={() => handleViewSource(ev.source.url, ev.source.title)}
+                          disabled={!ev.source.url || ev.source.url.trim() === ''}
+                          data-testid={`button-view-source-${ev.id}`}
+                        >
                           <ExternalLink className="h-3 w-3" />
                         </Button>
                       </div>
@@ -291,6 +357,8 @@ export function EvidencePanel({ isOpen = true, onToggle }: EvidencePanelProps) {
             ))}
           </div>
         </ScrollArea>
+          </>
+        )}
       </CardContent>
     </Card>
   );

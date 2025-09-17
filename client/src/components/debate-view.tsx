@@ -1,5 +1,8 @@
-import { useState } from "react";
-import { MessageSquare, ThumbsUp, ThumbsDown, User, Bot, Pin, ExternalLink } from "lucide-react";
+import { useState, useMemo } from "react";
+import { MessageSquare, ThumbsUp, ThumbsDown, User, Bot, Pin, ExternalLink, AlertCircle } from "lucide-react";
+import { useSessionContext } from "@/context/session-context";
+import { useSessionDebatePoints, useVoteOnDebatePoint } from "@/hooks/use-sessions";
+import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -28,60 +31,118 @@ interface DebateViewProps {
 
 export function DebateView({ onVote, onViewDebateMap }: DebateViewProps) {
   const [currentRound, setCurrentRound] = useState(1);
-  const [activePoint, setActivePoint] = useState(1);
   
-  // todo: remove mock functionality
-  const [debatePoints] = useState<DebatePoint[]>([
-    {
-      id: "point-1-pro",
-      agent: "proponent", 
-      point: 1,
-      title: "Customer Success Programs Drive Measurable Retention",
-      content: "Proactive customer success programs have proven track records across SaaS companies. Companies like HubSpot and Salesforce have reduced churn by 20-30% through dedicated success managers and health scoring systems. The investment in customer success typically pays for itself within 6-12 months through retained revenue.",
-      votes: { up: 8, down: 1, userVote: undefined },
-      evidenceAttached: true,
-      rebuttal: {
-        id: "point-1-con",
-        agent: "opponent",
-        point: 1,
-        title: "High Implementation Costs May Offset Retention Benefits",
-        content: "While customer success programs can improve retention, the substantial upfront costs often undermine profitability goals. Dedicated success managers cost $80-120K annually, plus platform costs. For smaller SaaS companies, this overhead may exceed the revenue protected by retention improvements, especially given uncertain ROI timelines.",
-        votes: { up: 5, down: 3 },
-        evidenceAttached: true
-      }
-    },
-    {
-      id: "point-2-pro",
-      agent: "proponent",
-      point: 2, 
-      title: "AI-Driven Approach Reduces Manual Overhead",
-      content: "Modern customer success platforms use AI to automate risk detection and intervention triggering, significantly reducing manual effort. Automated health scoring and triggered communications can handle the majority of customer touchpoints, requiring human intervention only for high-value or high-risk accounts.",
-      votes: { up: 6, down: 2 },
-      evidenceAttached: false,
-      rebuttal: {
-        id: "point-2-con",
-        agent: "opponent",
-        point: 2,
-        title: "Automation Risks Reducing Personal Customer Relationships",
-        content: "Over-reliance on automated systems can damage the personal relationships that often drive customer loyalty. B2B customers, especially in competitive markets, value human connections and personalized service. Automated touchpoints may feel impersonal and could actually accelerate churn among relationship-driven customers.",
-        votes: { up: 4, down: 4 },
-        evidenceAttached: false
-      }
-    },
-    {
-      id: "point-3-pro",
-      agent: "proponent",
-      point: 3,
-      title: "Early Intervention Prevents Costly Customer Recovery",
-      content: "Health scoring systems can identify at-risk customers 30-90 days before they would typically churn, allowing for targeted intervention when relationships can still be salvaged. The cost of retaining an existing customer is 5-25x lower than acquiring a new one, making early intervention highly cost-effective.",
-      votes: { up: 9, down: 0 },
-      evidenceAttached: true
-    }
-  ]);
+  const { currentSessionId } = useSessionContext();
+  const { data: rawDebatePoints = [], isLoading: debateLoading, error: debateError } = useSessionDebatePoints(currentSessionId);
+  const voteOnPointMutation = useVoteOnDebatePoint();
+  const { toast } = useToast();
 
-  const handleVote = (pointId: string, vote: "up" | "down") => {
-    onVote?.(pointId, vote);
-    console.log(`Voted ${vote} on point ${pointId}`);
+  // Transform backend debate points to component format
+  const debatePoints = useMemo(() => {
+    const pointsMap = new Map<number, DebatePoint>();
+    
+    // Group points by point number and organize proponent/opponent pairs
+    rawDebatePoints.forEach(point => {
+      const pointNum = point.pointNumber;
+      
+      const debatePoint: DebatePoint = {
+        id: point.id,
+        agent: point.agent as "proponent" | "opponent",
+        point: pointNum,
+        title: point.title,
+        content: point.content,
+        votes: {
+          up: point.upvotes,
+          down: point.downvotes,
+          userVote: undefined // Could be determined from user votes if needed
+        },
+        evidenceAttached: point.evidenceAttached || false
+      };
+
+      if (point.agent === "proponent") {
+        pointsMap.set(pointNum, debatePoint);
+      } else if (point.agent === "opponent") {
+        // Find the proponent point to attach as rebuttal
+        const proponentPoint = pointsMap.get(pointNum);
+        if (proponentPoint) {
+          proponentPoint.rebuttal = debatePoint;
+        } else {
+          // If proponent doesn't exist yet, create a placeholder
+          pointsMap.set(pointNum, debatePoint);
+        }
+      }
+    });
+
+    return Array.from(pointsMap.values()).sort((a, b) => a.point - b.point);
+  }, [rawDebatePoints]);
+
+  // Show loading state
+  if (debateLoading) {
+    return (
+      <div className="flex items-center justify-center p-8" data-testid="debate-loading">
+        <div className="text-center space-y-2">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+          <p className="text-muted-foreground">Loading debate...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state
+  if (debateError) {
+    return (
+      <div className="text-center p-8" data-testid="debate-error">
+        <AlertCircle className="h-12 w-12 mx-auto text-destructive mb-4" />
+        <h3 className="text-lg font-medium mb-2">Failed to Load Debate</h3>
+        <p className="text-muted-foreground mb-4">Unable to fetch debate points</p>
+        <Button variant="outline" onClick={() => window.location.reload()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  // Show empty state
+  if (debatePoints.length === 0) {
+    return (
+      <div className="text-center p-8" data-testid="no-debate-points">
+        <MessageSquare className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+        <h3 className="text-lg font-medium mb-2">No Debate Points Yet</h3>
+        <p className="text-muted-foreground">Debate points will appear here once the AI agents begin their discussion.</p>
+      </div>
+    );
+  }
+
+
+  const handleVote = async (pointId: string, vote: "up" | "down") => {
+    if (!currentSessionId) {
+      toast({
+        title: "Voting failed",
+        description: "No active session found.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      await voteOnPointMutation.mutateAsync({ 
+        sessionId: currentSessionId,
+        pointId, 
+        voteType: vote 
+      });
+      toast({
+        title: "Vote recorded",
+        description: `Your ${vote === "up" ? "upvote" : "downvote"} has been recorded.`,
+      });
+      onVote?.(pointId, vote);
+    } catch (error) {
+      toast({
+        title: "Voting failed",
+        description: "Unable to record your vote. Please try again.",
+        variant: "destructive",
+      });
+      console.error(`Failed to vote ${vote} on point ${pointId}:`, error);
+    }
   };
 
   const handleViewDebateMap = () => {
@@ -181,6 +242,7 @@ export function DebateView({ onVote, onViewDebateMap }: DebateViewProps) {
                       variant="ghost"
                       size="sm"
                       onClick={() => handleVote(point.id, "up")}
+                      disabled={voteOnPointMutation.isPending}
                       className={`flex items-center gap-1 ${
                         point.votes.userVote === "up" ? "text-green-600" : ""
                       }`}
@@ -193,6 +255,7 @@ export function DebateView({ onVote, onViewDebateMap }: DebateViewProps) {
                       variant="ghost"
                       size="sm"
                       onClick={() => handleVote(point.id, "down")}
+                      disabled={voteOnPointMutation.isPending}
                       className={`flex items-center gap-1 ${
                         point.votes.userVote === "down" ? "text-red-600" : ""
                       }`}
@@ -250,6 +313,7 @@ export function DebateView({ onVote, onViewDebateMap }: DebateViewProps) {
                         variant="ghost"
                         size="sm"
                         onClick={() => handleVote(point.rebuttal!.id, "up")}
+                        disabled={voteOnPointMutation.isPending}
                         className={`flex items-center gap-1 ${
                           point.rebuttal.votes.userVote === "up" ? "text-green-600" : ""
                         }`}
@@ -262,6 +326,7 @@ export function DebateView({ onVote, onViewDebateMap }: DebateViewProps) {
                         variant="ghost"
                         size="sm"
                         onClick={() => handleVote(point.rebuttal!.id, "down")}
+                        disabled={voteOnPointMutation.isPending}
                         className={`flex items-center gap-1 ${
                           point.rebuttal.votes.userVote === "down" ? "text-red-600" : ""
                         }`}
