@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { Lightbulb, Target, Cog, AlertTriangle, TrendingUp, Clock, RotateCcw, Edit, ArrowRight } from "lucide-react";
+import { useSessionContext } from "@/context/session-context";
+import { useSessionSolutions } from "@/hooks/use-sessions";
+import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -34,68 +37,52 @@ export function SolutionDisplay({
 }: SolutionDisplayProps) {
   const [selectedSolution, setSelectedSolution] = useState(0);
   
-  // todo: remove mock functionality
-  const [solutions] = useState<Solution[]>([
-    {
-      id: "sol-001",
-      title: "Customer Success Enhancement Program",
-      objective: "Implement a proactive customer success program that identifies at-risk customers and provides personalized retention strategies while optimizing operational efficiency.",
-      approach: "Deploy AI-driven customer health scoring combined with automated touchpoints and dedicated success manager interventions for high-value accounts.",
-      enablers: [
-        "Customer analytics platform integration",
-        "Success manager training program", 
-        "Automated communication workflows",
-        "Customer feedback collection system"
-      ],
-      risks: [
-        "Initial implementation costs may impact short-term profitability",
-        "Customer data privacy concerns",
-        "Potential staff resistance to new processes",
-        "Over-automation may reduce personal touch"
-      ],
-      impact: {
-        timeframe: "longer_term",
-        effort: "high",
-        confidence: 85
-      },
-      expectedOutcomes: [
-        "25% reduction in customer churn within 12 months",
-        "15% increase in customer lifetime value",
-        "Improved customer satisfaction scores",
-        "More predictable revenue stream"
-      ]
-    },
-    {
-      id: "sol-002", 
-      title: "Quick Win: Feature Usage Optimization",
-      objective: "Rapidly improve feature adoption and user engagement through targeted onboarding improvements and usage analytics.",
-      approach: "Implement in-app guidance, feature discovery prompts, and usage dashboards to help customers realize value faster.",
-      enablers: [
-        "In-app messaging tool",
-        "User analytics tracking",
-        "Onboarding flow redesign",
-        "Feature usage dashboards"
-      ],
-      risks: [
-        "May not address underlying product-market fit issues",
-        "Potential user interface complexity increase",
-        "Limited impact on fundamental retention drivers"
-      ],
-      impact: {
-        timeframe: "quick_win",
-        effort: "medium",
-        confidence: 75
-      },
-      expectedOutcomes: [
-        "10% improvement in feature adoption",
-        "Reduced time-to-value for new users",
-        "Better user engagement metrics",
-        "Quick revenue protection"
-      ]
-    }
-  ]);
+  const { currentSessionId } = useSessionContext();
+  const { data: solutions = [], isLoading: solutionsLoading, error: solutionsError, refetch: refetchSolutions } = useSessionSolutions(currentSessionId);
+  const { toast } = useToast();
 
-  const currentSolution = solutions[selectedSolution];
+  // Show loading or error states
+  if (solutionsLoading) {
+    return (
+      <div className="flex items-center justify-center p-8" data-testid="solutions-loading">
+        <div className="text-center space-y-2">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+          <p className="text-muted-foreground">Loading solutions...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (solutionsError) {
+    return (
+      <div className="text-center p-8" data-testid="solutions-error">
+        <p className="text-destructive">Failed to load solutions</p>
+        <Button variant="outline" onClick={() => refetchSolutions()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  if (solutions.length === 0) {
+    return (
+      <div className="text-center p-8" data-testid="no-solutions">
+        <Lightbulb className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+        <h3 className="text-lg font-medium mb-2">No Solutions Generated Yet</h3>
+        <p className="text-muted-foreground">Solutions will appear here once the AI agents have processed your problem statement.</p>
+      </div>
+    );
+  }
+
+
+  // Add bounds safety for selectedSolution
+  const safeSelectedIndex = Math.min(selectedSolution, solutions.length - 1);
+  const currentSolution = solutions[safeSelectedIndex];
+  
+  // Reset selection if out of bounds
+  if (selectedSolution >= solutions.length && solutions.length > 0) {
+    setSelectedSolution(0);
+  }
 
   const handleRegenerateSolution = () => {
     onRegenerateSolution?.(currentSolution.id);
@@ -127,6 +114,18 @@ export function SolutionDisplay({
       : "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200";
   };
 
+  // Type guard for impact data
+  const getImpactData = (impact: any) => {
+    if (impact && typeof impact === 'object') {
+      return {
+        timeframe: impact.timeframe || 'unknown',
+        effort: impact.effort || 'unknown', 
+        confidence: impact.confidence || 0
+      };
+    }
+    return { timeframe: 'unknown', effort: 'unknown', confidence: 0 };
+  };
+
   return (
     <div className="space-y-6" data-testid="solution-display">
       {/* Solution Selector */}
@@ -139,7 +138,7 @@ export function SolutionDisplay({
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <Tabs value={selectedSolution.toString()} onValueChange={(value) => setSelectedSolution(parseInt(value))}>
+            <Tabs value={safeSelectedIndex.toString()} onValueChange={(value) => setSelectedSolution(parseInt(value))}>
               <TabsList className="grid w-full grid-cols-2">
                 {solutions.map((solution, index) => (
                   <TabsTrigger 
@@ -150,9 +149,9 @@ export function SolutionDisplay({
                     Solution {index + 1}
                     <Badge 
                       variant="secondary" 
-                      className={`ml-2 ${getTimeframeColor(solution.impact.timeframe)}`}
+                      className={`ml-2 ${getTimeframeColor(getImpactData(solution.impact).timeframe)}`}
                     >
-                      {solution.impact.timeframe === "quick_win" ? "Quick Win" : "Long Term"}
+                      {getImpactData(solution.impact).timeframe === "quick_win" ? "Quick Win" : "Long Term"}
                     </Badge>
                   </TabsTrigger>
                 ))}
@@ -169,14 +168,14 @@ export function SolutionDisplay({
             <div className="space-y-1">
               <CardTitle className="text-xl">{currentSolution.title}</CardTitle>
               <div className="flex gap-2">
-                <Badge className={getTimeframeColor(currentSolution.impact.timeframe)}>
-                  {currentSolution.impact.timeframe === "quick_win" ? "Quick Win" : "Long Term"}
+                <Badge className={getTimeframeColor(getImpactData(currentSolution.impact).timeframe)}>
+                  {getImpactData(currentSolution.impact).timeframe === "quick_win" ? "Quick Win" : "Long Term"}
                 </Badge>
-                <Badge className={getEffortColor(currentSolution.impact.effort)}>
-                  {currentSolution.impact.effort.toUpperCase()} Effort
+                <Badge className={getEffortColor(getImpactData(currentSolution.impact).effort)}>
+                  {getImpactData(currentSolution.impact).effort.toUpperCase()} Effort
                 </Badge>
                 <Badge variant="outline">
-                  {currentSolution.impact.confidence}% Confidence
+                  {getImpactData(currentSolution.impact).confidence}% Confidence
                 </Badge>
               </div>
             </div>

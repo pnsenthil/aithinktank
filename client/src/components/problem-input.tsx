@@ -1,5 +1,8 @@
-import { useState } from "react";
-import { FileText, Mic, MicOff, CheckCircle, Clock } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { FileText, Mic, MicOff, CheckCircle, Clock, Play, Pause, Volume2, Loader2 } from "lucide-react";
+import { useSessionContext } from "@/context/session-context";
+import { useSessionProblems, useCreateProblem, useApproveProblem, useGenerateVoice, useVoiceHealth } from "@/hooks/use-sessions";
+import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,53 +17,141 @@ interface ProblemInputProps {
 
 export function ProblemInput({ onSubmit, onApprove }: ProblemInputProps) {
   const [problemStatement, setProblemStatement] = useState("");
-  const [isRecording, setIsRecording] = useState(false);
-  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [isGeneratingVoice, setIsGeneratingVoice] = useState(false);
   const [characterCount, setCharacterCount] = useState(0);
+  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // todo: remove mock functionality  
-  const [submittedProblem] = useState({
-    id: "prob-001",
-    text: "How might we reduce customer churn in our SaaS platform while maintaining profitability and improving user experience?",
-    submittedBy: "Sarah Chen",
-    submittedAt: "2 minutes ago",
-    status: "pending_approval" as const
-  });
+  const { currentSessionId } = useSessionContext();
+  const { data: problems, isLoading: problemsLoading } = useSessionProblems(currentSessionId);
+  const createProblemMutation = useCreateProblem();
+  const approveProblemMutation = useApproveProblem();
+  const generateVoiceMutation = useGenerateVoice();
+  const { data: voiceHealth } = useVoiceHealth();
+  const { toast } = useToast();
+
+  // Get the most recent pending problem (with fallback to any non-approved problem)
+  const submittedProblem = problems?.find(p => p.status === "pending") || 
+                          problems?.find(p => p.status !== "approved");
 
   const handleTextChange = (text: string) => {
     setProblemStatement(text);
     setCharacterCount(text.length);
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    if (problemStatement.trim() && currentSessionId) {
+      try {
+        await createProblemMutation.mutateAsync({
+          sessionId: currentSessionId,
+          problemData: {
+            sessionId: currentSessionId,
+            statement: problemStatement.trim()
+          }
+        });
+        onSubmit?.(problemStatement);
+        setIsSubmitted(true);
+        toast({ title: "Problem submitted successfully!" });
+      } catch (error) {
+        toast({ title: "Failed to submit problem", variant: "destructive" });
+      }
+    }
+  };
+
+  const handleVoiceNarration = async () => {
+    // Voice narration only - no speech-to-text functionality
     if (problemStatement.trim()) {
-      onSubmit?.(problemStatement);
-      setIsSubmitted(true);
-      console.log("Problem submitted:", problemStatement);
-    }
-  };
-
-  const handleVoiceToggle = () => {
-    setIsRecording(!isRecording);
-    if (!isRecording) {
-      console.log("Starting voice recording...");
-      // todo: remove mock functionality
-      setTimeout(() => {
-        setProblemStatement("How might we improve customer retention while reducing operational costs?");
-        setCharacterCount(85);
-        setIsRecording(false);
-      }, 3000);
+      try {
+        setIsGeneratingVoice(true);
+        const result = await generateVoiceMutation.mutateAsync({
+          text: problemStatement.trim(),
+          voiceId: 'professional-narrator'
+        });
+        if (result.success && result.audioUrl) {
+          setAudioUrl(result.audioUrl);
+          toast({ title: "Voice narration generated!", description: "Click the play button to listen to your problem statement." });
+        }
+      } catch (error) {
+        toast({ 
+          title: "Voice generation failed", 
+          description: "Please try again later",
+          variant: "destructive" 
+        });
+      } finally {
+        setIsGeneratingVoice(false);
+      }
     } else {
-      console.log("Stopping voice recording...");
+      toast({ 
+        title: "Please enter text first", 
+        description: "Voice narration requires a problem statement to be entered first",
+        variant: "destructive" 
+      });
     }
   };
 
-  const handleApproval = () => {
-    onApprove?.(submittedProblem.id);
-    console.log("Problem approved:", submittedProblem.id);
+  const handleAudioPlay = () => {
+    if (audioUrl && audioRef.current) {
+      if (isPlaying) {
+        audioRef.current.pause();
+        setIsPlaying(false);
+      } else {
+        audioRef.current.play();
+        setIsPlaying(true);
+      }
+    }
   };
 
-  if (isSubmitted || submittedProblem.status === "pending_approval") {
+  const handleAudioEnded = () => {
+    setIsPlaying(false);
+  };
+
+  const handleAudioError = () => {
+    setIsPlaying(false);
+    toast({ 
+      title: "Audio playback failed", 
+      description: "Please try generating the audio again",
+      variant: "destructive" 
+    });
+  };
+
+  const handleApproval = async () => {
+    if (submittedProblem) {
+      try {
+        await approveProblemMutation.mutateAsync({
+          sessionId: currentSessionId!,
+          problemId: submittedProblem.id
+        });
+        onApprove?.(submittedProblem.id);
+        toast({ title: "Problem approved successfully!" });
+      } catch (error) {
+        toast({ title: "Failed to approve problem", variant: "destructive" });
+      }
+    }
+  };
+
+  // Show loading state while problems are loading
+  if (problemsLoading) {
+    return (
+      <Card className="max-w-4xl mx-auto" data-testid="problem-loading">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileText className="h-5 w-5" />
+            Loading Problem Status...
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-8 w-8 animate-spin" />
+            <span className="ml-2 text-muted-foreground">Loading...</span>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (isSubmitted || (submittedProblem && submittedProblem.status === "pending")) {
     return (
       <Card className="max-w-4xl mx-auto" data-testid="problem-approval">
         <CardHeader>
@@ -79,14 +170,14 @@ export function ProblemInput({ onSubmit, onApprove }: ProblemInputProps) {
               </Avatar>
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="font-medium">{submittedProblem.submittedBy}</span>
+                  <span className="font-medium">{submittedProblem?.submittedBy || 'Anonymous'}</span>
                   <Badge variant="secondary" className="flex items-center gap-1">
                     <Clock className="h-3 w-3" />
-                    {submittedProblem.submittedAt}
+                    {new Date(submittedProblem?.createdAt || new Date()).toLocaleDateString()}
                   </Badge>
                 </div>
                 <p className="text-lg leading-relaxed">
-                  {submittedProblem.text}
+                  {submittedProblem?.statement}
                 </p>
               </div>
             </div>
@@ -110,6 +201,7 @@ export function ProblemInput({ onSubmit, onApprove }: ProblemInputProps) {
                 </Button>
                 <Button 
                   onClick={handleApproval}
+                  disabled={approveProblemMutation.isPending}
                   className="flex items-center gap-2"
                   data-testid="button-approve-problem"
                 >
@@ -155,47 +247,90 @@ export function ProblemInput({ onSubmit, onApprove }: ProblemInputProps) {
           </div>
         </div>
 
-        {/* Voice Input */}
+        {/* Voice Narration */}
         <div className="flex items-center gap-4 p-4 border rounded-lg bg-muted/30">
           <Button
-            variant={isRecording ? "destructive" : "outline"}
+            variant="outline"
             size="sm"
-            onClick={handleVoiceToggle}
+            onClick={handleVoiceNarration}
+            disabled={isGeneratingVoice || !problemStatement.trim()}
             className="flex items-center gap-2"
-            data-testid="button-voice-input"
+            data-testid="button-voice-narration"
           >
-            {isRecording ? (
+            {isGeneratingVoice ? (
               <>
-                <MicOff className="h-4 w-4" />
-                Stop Recording
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Generating...
               </>
             ) : (
               <>
-                <Mic className="h-4 w-4" />
-                Voice Input
+                <Volume2 className="h-4 w-4" />
+                Generate Audio
               </>
             )}
           </Button>
+          
+          {audioUrl && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleAudioPlay}
+              className="flex items-center gap-2"
+              data-testid="button-play-audio"
+            >
+              {isPlaying ? (
+                <>
+                  <Pause className="h-4 w-4" />
+                  Pause
+                </>
+              ) : (
+                <>
+                  <Play className="h-4 w-4" />
+                  Play
+                </>
+              )}
+            </Button>
+          )}
+          
           <div className="flex-1">
-            {isRecording ? (
+            {isGeneratingVoice ? (
               <div className="flex items-center gap-2">
-                <div className="flex gap-1">
-                  {[1, 2, 3].map((i) => (
-                    <div
-                      key={i}
-                      className="w-1 h-4 bg-destructive rounded animate-pulse"
-                      style={{ animationDelay: `${i * 0.2}s` }}
-                    />
-                  ))}
+                <div className="animate-pulse">
+                  <div className="flex gap-1">
+                    {[1, 2, 3].map((i) => (
+                      <div
+                        key={i}
+                        className="w-1 h-4 bg-primary rounded"
+                        style={{ animationDelay: `${i * 0.2}s` }}
+                      />
+                    ))}
+                  </div>
                 </div>
-                <span className="text-sm text-destructive">Recording...</span>
+                <span className="text-sm text-primary">Generating voice narration...</span>
+              </div>
+            ) : audioUrl ? (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-green-600 font-medium">✓ Audio ready</span>
+                <span className="text-sm text-muted-foreground">Click play to listen to your problem statement</span>
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                Use voice input to dictate your problem statement
+                Generate AI voice narration of your problem statement
               </p>
             )}
           </div>
+          
+          {/* Hidden audio element */}
+          {audioUrl && (
+            <audio
+              ref={audioRef}
+              src={audioUrl}
+              onEnded={handleAudioEnded}
+              onError={handleAudioError}
+              data-testid="audio-player"
+              style={{ display: 'none' }}
+            />
+          )}
         </div>
 
         {/* Guidelines */}
@@ -216,10 +351,17 @@ export function ProblemInput({ onSubmit, onApprove }: ProblemInputProps) {
           </Button>
           <Button 
             onClick={handleSubmit}
-            disabled={problemStatement.trim().length < 10}
+            disabled={problemStatement.trim().length < 10 || createProblemMutation.isPending}
             data-testid="button-submit-problem"
           >
-            Submit for Review
+            {createProblemMutation.isPending ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2" />
+                Submitting...
+              </>
+            ) : (
+              "Submit for Review"
+            )}
           </Button>
         </div>
       </CardContent>
