@@ -10,6 +10,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { SessionProvider, useSessionContext } from "@/context/session-context";
 import { AuthProvider, useAuth } from "@/context/auth-context";
 import { ProtectedRoute } from "@/components/protected-route";
+import { WorkshopProgress } from "@/components/workshop-progress";
 
 // Import pages
 import SetupPage from "@/pages/setup";
@@ -100,25 +101,36 @@ function AppContent() {
           completedPhases={getCompletedPhases()} 
         />
         <div className="flex flex-col flex-1">
-          <header className="flex items-center justify-between p-4 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-            <div className="flex items-center gap-4">
-              <SidebarTrigger data-testid="button-sidebar-toggle" />
-              <div className="text-sm text-muted-foreground">
-                Phase {getCurrentPhase()} of 6
+          <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+            {/* Top Header Bar */}
+            <div className="flex items-center justify-between p-4">
+              <div className="flex items-center gap-4">
+                <SidebarTrigger data-testid="button-sidebar-toggle" />
+                <div className="text-lg font-semibold text-foreground">
+                  AI Think Tank Workshop
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="text-sm text-muted-foreground">
+                  Welcome, {user?.username}
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="text-sm text-primary hover:underline"
+                  data-testid="button-logout"
+                >
+                  Logout
+                </button>
+                <ThemeToggle />
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <div className="text-sm text-muted-foreground">
-                Welcome, {user?.username}
-              </div>
-              <button
-                onClick={handleLogout}
-                className="text-sm text-primary hover:underline"
-                data-testid="button-logout"
-              >
-                Logout
-              </button>
-              <ThemeToggle />
+            
+            {/* Progress Indicator */}
+            <div className="px-4 pb-4">
+              <WorkshopProgress 
+                currentPhase={getCurrentPhase()} 
+                completedPhases={getCompletedPhases()}
+              />
             </div>
           </header>
           <main className="flex-1 overflow-auto">
