@@ -7,10 +7,68 @@ import type {
   DebatePoint, 
   Evidence, 
   Summary,
+  User,
   insertSessionSchema,
-  insertProblemSchema
+  insertProblemSchema,
+  insertUserSchema
 } from '@shared/schema';
 import { z } from 'zod';
+
+// Authentication Hooks
+
+export type SafeUser = Omit<User, 'password'>;
+
+export function useCurrentUser() {
+  return useQuery<{ user: SafeUser } | null>({
+    queryKey: ['/api/auth/me'],
+    retry: false,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+}
+
+export function useLogin() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: async (credentials: { username: string; password: string }) => {
+      const response = await apiRequest('POST', '/api/auth/login', credentials);
+      return response.json() as Promise<{ message: string; user: SafeUser }>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/sessions'] });
+    },
+  });
+}
+
+export function useSignup() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: async (userData: z.infer<typeof insertUserSchema> & { confirmPassword: string }) => {
+      const response = await apiRequest('POST', '/api/auth/register', userData);
+      return response.json() as Promise<{ message: string; user: SafeUser }>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
+    },
+  });
+}
+
+export function useLogout() {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest('POST', '/api/auth/logout');
+      return response.json() as Promise<{ message: string }>;
+    },
+    onSuccess: () => {
+      queryClient.setQueryData(['/api/auth/me'], null);
+      queryClient.clear(); // Clear all cached data on logout
+    },
+  });
+}
 
 // Session Management Hooks
 
