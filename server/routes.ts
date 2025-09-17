@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { orchestrator } from "./agents/orchestrator";
@@ -6,16 +6,183 @@ import { getVoiceService, AudioGenerationRequestSchema } from "./services/voice-
 import { 
   insertSessionSchema, insertProblemSchema, insertSolutionSchema, 
   insertDebatePointSchema, insertEvidenceSchema, insertQuestionSchema,
-  insertSummarySchema, insertVoteSchema, updateSessionSchema 
+  insertSummarySchema, insertVoteSchema, updateSessionSchema,
+  insertUserSchema 
 } from "@shared/schema";
+import { z } from "zod";
+
+// Rate limiting store (in-memory for development, use Redis in production)
+const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
+
+// Extend session types
+declare module 'express-session' {
+  interface SessionData {
+    userId?: string;
+    username?: string;
+  }
+}
+
+// Authentication middleware
+interface AuthenticatedRequest extends Request {
+  user?: { id: string; username: string };
+}
+
+const authenticateUser = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    // Check if user is logged in via session
+    if (!req.session?.userId) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
+
+    // Get user data
+    const user = await storage.getUser(req.session.userId);
+    if (!user) {
+      return res.status(401).json({ message: "Invalid session" });
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    res.status(500).json({ message: "Authentication error" });
+  }
+};
+
+// Rate limiting middleware 
+const rateLimit = (windowMs: number, maxRequests: number) => {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const key = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    
+    // Clean up expired entries
+    const entries = Array.from(rateLimitStore.entries());
+    for (const [ip, data] of entries) {
+      if (now > data.resetTime) {
+        rateLimitStore.delete(ip);
+      }
+    }
+    
+    const userData = rateLimitStore.get(key);
+    
+    if (!userData || now > userData.resetTime) {
+      // Reset window
+      rateLimitStore.set(key, { count: 1, resetTime: now + windowMs });
+      return next();
+    }
+    
+    if (userData.count >= maxRequests) {
+      return res.status(429).json({ 
+        message: "Too many requests", 
+        retryAfter: Math.ceil((userData.resetTime - now) / 1000) 
+      });
+    }
+    
+    userData.count++;
+    next();
+  };
+};
+
+// Validation schemas
+const loginSchema = z.object({
+  username: z.string().min(1, "Username is required"),
+  password: z.string().min(1, "Password is required")
+});
+
+const registerSchema = insertUserSchema.extend({
+  confirmPassword: z.string()
+}).refine(data => data.password === data.confirmPassword, {
+  message: "Passwords do not match",
+  path: ["confirmPassword"]
+});
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Session Management Routes
+  // Authentication Routes
+  
+  // Register user
+  app.post("/api/auth/register", rateLimit(15 * 60 * 1000, 5), async (req, res) => {
+    try {
+      const userData = registerSchema.parse(req.body);
+      
+      // Check if user already exists
+      const existingUser = await storage.getUserByUsername(userData.username);
+      if (existingUser) {
+        return res.status(400).json({ message: "Username already exists" });
+      }
+      
+      const user = await storage.createUser({
+        username: userData.username,
+        password: userData.password
+      });
+      
+      res.status(201).json({ 
+        message: "User created successfully", 
+        user: { id: user.id, username: user.username } 
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation error", errors: error.errors });
+      }
+      res.status(500).json({ message: "Failed to create user", error });
+    }
+  });
+
+  // Login user
+  app.post("/api/auth/login", rateLimit(15 * 60 * 1000, 10), async (req, res) => {
+    try {
+      const { username, password } = loginSchema.parse(req.body);
+      
+      const isValid = await storage.validateUserPassword(username, password);
+      if (!isValid) {
+        return res.status(401).json({ message: "Invalid credentials" });
+      }
+      
+      const user = await storage.getUserByUsername(username);
+      if (!user) {
+        return res.status(401).json({ message: "Invalid credentials" });
+      }
+      
+      // Set session
+      req.session.userId = user.id;
+      req.session.username = user.username;
+      
+      res.json({ 
+        message: "Login successful", 
+        user: { id: user.id, username: user.username } 
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Validation error", errors: error.errors });
+      }
+      res.status(500).json({ message: "Login failed", error });
+    }
+  });
+
+  // Logout user
+  app.post("/api/auth/logout", (req, res) => {
+    req.session.destroy((err: any) => {
+      if (err) {
+        return res.status(500).json({ message: "Logout failed" });
+      }
+      res.clearCookie('connect.sid');
+      res.json({ message: "Logout successful" });
+    });
+  });
+
+  // Get current user
+  app.get("/api/auth/me", authenticateUser, (req: AuthenticatedRequest, res) => {
+    res.json({ user: req.user });
+  });
+
+  // Apply rate limiting to AI endpoints
+  const aiRateLimit = rateLimit(60 * 1000, 10); // 10 requests per minute
+  // Session Management Routes (Protected)
   
   // Create a new session
-  app.post("/api/sessions", async (req, res) => {
+  app.post("/api/sessions", authenticateUser, async (req: AuthenticatedRequest, res) => {
     try {
-      const sessionData = insertSessionSchema.parse(req.body);
+      const sessionData = insertSessionSchema.parse({
+        ...req.body,
+        facilitatorId: req.user!.id // Ensure session is owned by authenticated user
+      });
       const session = await storage.createSession(sessionData);
       res.json(session);
     } catch (error) {
@@ -23,18 +190,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get all sessions
-  app.get("/api/sessions", async (req, res) => {
+  // Get all sessions (with pagination)
+  app.get("/api/sessions", authenticateUser, async (req: AuthenticatedRequest, res) => {
     try {
-      const sessions = await storage.getAllSessions();
-      res.json(sessions);
+      // Add pagination support
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const offset = (page - 1) * limit;
+      
+      const sessions = await storage.getUserSessions(req.user!.id);
+      const paginatedSessions = sessions.slice(offset, offset + limit);
+      
+      res.json({
+        sessions: paginatedSessions,
+        pagination: {
+          page,
+          limit,
+          total: sessions.length,
+          pages: Math.ceil(sessions.length / limit)
+        }
+      });
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch sessions", error });
     }
   });
 
   // Get specific session
-  app.get("/api/sessions/:id", async (req, res) => {
+  app.get("/api/sessions/:id", authenticateUser, async (req: AuthenticatedRequest, res) => {
     try {
       const session = await storage.getSession(req.params.id);
       if (!session) {
@@ -47,7 +229,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Update session (for phase progression)
-  app.patch("/api/sessions/:id", async (req, res) => {
+  app.patch("/api/sessions/:id", authenticateUser, async (req: AuthenticatedRequest, res) => {
     try {
       const updates = updateSessionSchema.parse(req.body);
       const session = await storage.updateSession(req.params.id, updates);
@@ -63,11 +245,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Problem Statement Routes
 
   // Submit problem statement
-  app.post("/api/sessions/:sessionId/problems", async (req, res) => {
+  app.post("/api/sessions/:sessionId/problems", authenticateUser, async (req: AuthenticatedRequest, res) => {
     try {
       const problemData = insertProblemSchema.parse({
         ...req.body,
-        sessionId: req.params.sessionId
+        sessionId: req.params.sessionId,
+        submittedBy: req.user!.id
       });
       const problem = await storage.createProblem(problemData);
       res.json(problem);
@@ -103,7 +286,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Solution Generation Routes
 
   // Create solution (AI-generated)
-  app.post("/api/sessions/:sessionId/solutions", async (req, res) => {
+  app.post("/api/sessions/:sessionId/solutions", authenticateUser, aiRateLimit, async (req: AuthenticatedRequest, res) => {
     try {
       const solutionData = insertSolutionSchema.parse({
         ...req.body,
@@ -141,8 +324,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Debate Routes
 
-  // Create debate point
-  app.post("/api/sessions/:sessionId/debate-points", async (req, res) => {
+  // Create debate point  
+  app.post("/api/sessions/:sessionId/debate-points", authenticateUser, aiRateLimit, async (req: AuthenticatedRequest, res) => {
     try {
       const pointData = insertDebatePointSchema.parse({
         ...req.body,
@@ -176,11 +359,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Vote on debate point with transactional vote counting
-  app.post("/api/debate-points/:pointId/vote", async (req, res) => {
+  app.post("/api/debate-points/:pointId/vote", authenticateUser, async (req: AuthenticatedRequest, res) => {
     try {
       const voteData = insertVoteSchema.parse({
         ...req.body,
-        pointId: req.params.pointId
+        pointId: req.params.pointId,
+        userId: req.user!.id
       });
 
       // Use transactional vote creation with count update
@@ -261,34 +445,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Summary Routes
-
-  // Create summary
-  app.post("/api/sessions/:sessionId/summary", async (req, res) => {
-    try {
-      const summaryData = insertSummarySchema.parse({
-        ...req.body,
-        sessionId: req.params.sessionId
-      });
-      const summary = await storage.createSummary(summaryData);
-      res.json(summary);
-    } catch (error) {
-      res.status(400).json({ message: "Invalid summary data", error });
-    }
-  });
-
-  // Get session summary
-  app.get("/api/sessions/:sessionId/summary", async (req, res) => {
-    try {
-      const summary = await storage.getSessionSummary(req.params.sessionId);
-      if (!summary) {
-        return res.status(404).json({ message: "Summary not found" });
-      }
-      res.json(summary);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch summary", error });
-    }
-  });
 
   // Phase Progression Routes
 
@@ -548,7 +704,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const debatePoints = await storage.getSessionDebatePoints(sessionId);
-      const summaries = await storage.getSessionSummaries(sessionId);
+      const sessionSummary = await storage.getSessionSummary(sessionId);
 
       // Build debate summary structure
       const rounds = debatePoints.reduce((acc, point) => {
@@ -563,9 +719,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return acc;
       }, [] as any[]);
 
-      const finalSummary = summaries.find(s => s.phase === 6);
+      const finalSummary = sessionSummary;
       
-      const summary = {
+      const debateSummaryData = {
         sessionTitle: session.title,
         problemStatement: approvedProblem.description,
         rounds: rounds.length > 0 ? rounds : [{
@@ -590,7 +746,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      const result = await voiceService.narrateDebateSummary(summary);
+      const result = await voiceService.narrateDebateSummary(debateSummaryData);
 
       res.json({
         success: true,
