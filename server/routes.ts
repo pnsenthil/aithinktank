@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { orchestrator } from "./agents/orchestrator";
 import { 
   insertSessionSchema, insertProblemSchema, insertSolutionSchema, 
   insertDebatePointSchema, insertEvidenceSchema, insertQuestionSchema,
@@ -323,9 +324,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Trigger solution generation
   app.post("/api/sessions/:sessionId/generate-solutions", async (req, res) => {
     try {
-      // This would trigger the AI Solution Agent to generate solutions
-      // For now, return a success response - we'll implement AI integration next
-      res.json({ message: "Solution generation triggered", sessionId: req.params.sessionId });
+      const result = await orchestrator.processPhase(req.params.sessionId, 3);
+      if (result.success) {
+        res.json({ 
+          message: "Solution generation completed", 
+          sessionId: req.params.sessionId,
+          messages: result.messages,
+          nextActions: result.nextActions
+        });
+      } else {
+        res.status(500).json({ message: result.error || "Failed to generate solutions" });
+      }
     } catch (error) {
       res.status(500).json({ message: "Failed to trigger solution generation", error });
     }
@@ -334,8 +343,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Trigger debate round
   app.post("/api/sessions/:sessionId/start-debate", async (req, res) => {
     try {
-      // This would trigger the Proponent and Opponent agents to start debating
-      res.json({ message: "Debate started", sessionId: req.params.sessionId });
+      const result = await orchestrator.processPhase(req.params.sessionId, 4);
+      if (result.success) {
+        res.json({ 
+          message: "Debate completed", 
+          sessionId: req.params.sessionId,
+          messages: result.messages,
+          nextActions: result.nextActions
+        });
+      } else {
+        res.status(500).json({ message: result.error || "Failed to conduct debate" });
+      }
     } catch (error) {
       res.status(500).json({ message: "Failed to start debate", error });
     }
@@ -344,8 +362,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Trigger evidence gathering
   app.post("/api/sessions/:sessionId/gather-evidence", async (req, res) => {
     try {
-      // This would trigger the Analyst agent to gather evidence using Perplexity
-      res.json({ message: "Evidence gathering triggered", sessionId: req.params.sessionId });
+      const result = await orchestrator.processPhase(req.params.sessionId, 5);
+      if (result.success) {
+        res.json({ 
+          message: "Evidence gathering completed", 
+          sessionId: req.params.sessionId,
+          messages: result.messages,
+          nextActions: result.nextActions
+        });
+      } else {
+        res.status(500).json({ message: result.error || "Failed to gather evidence" });
+      }
     } catch (error) {
       res.status(500).json({ message: "Failed to trigger evidence gathering", error });
     }
@@ -354,10 +381,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Trigger summary generation
   app.post("/api/sessions/:sessionId/generate-summary", async (req, res) => {
     try {
-      // This would trigger the Moderator agent to generate final summary
-      res.json({ message: "Summary generation triggered", sessionId: req.params.sessionId });
+      const result = await orchestrator.processPhase(req.params.sessionId, 6);
+      if (result.success) {
+        res.json({ 
+          message: "Summary generation completed", 
+          sessionId: req.params.sessionId,
+          messages: result.messages,
+          nextActions: result.nextActions
+        });
+      } else {
+        res.status(500).json({ message: result.error || "Failed to generate summary" });
+      }
     } catch (error) {
       res.status(500).json({ message: "Failed to trigger summary generation", error });
+    }
+  });
+
+  // Process current phase automatically
+  app.post("/api/sessions/:sessionId/process-current-phase", async (req, res) => {
+    try {
+      const session = await storage.getSession(req.params.sessionId);
+      if (!session) {
+        return res.status(404).json({ message: "Session not found" });
+      }
+
+      // Validate phase bounds
+      if (session.currentPhase < 1 || session.currentPhase > 6) {
+        return res.status(400).json({ message: `Invalid phase: ${session.currentPhase}` });
+      }
+
+      const result = await orchestrator.processPhase(req.params.sessionId, session.currentPhase);
+      if (result.success) {
+        res.json({ 
+          message: `Phase ${session.currentPhase} processing completed`, 
+          sessionId: req.params.sessionId,
+          currentPhase: session.currentPhase,
+          nextPhase: Math.min(session.currentPhase + 1, 6),
+          messages: result.messages,
+          nextActions: result.nextActions,
+          phaseComplete: result.phaseComplete,
+          data: result.data || {}
+        });
+      } else {
+        res.status(500).json({ 
+          message: result.error || "Failed to process current phase",
+          sessionId: req.params.sessionId,
+          currentPhase: session.currentPhase,
+          success: false
+        });
+      }
+    } catch (error) {
+      console.error("Phase processing error:", error);
+      res.status(500).json({ 
+        message: "Failed to process current phase", 
+        error: error instanceof Error ? error.message : "Unknown error",
+        sessionId: req.params.sessionId
+      });
     }
   });
 
